@@ -27,6 +27,12 @@
 
 #define checkCUDAErrorWithLine(msg) checkCUDAError(msg, __LINE__)
 
+// strange attractors
+#define ENABLE_LORENZ    0
+#define ENABLE_THOMAS    0
+#define ENABLE_HALVORSEN 0
+#define ENABLE_SPROTT_B  0
+
 /**
 * Check for CUDA errors; print and exit if there was a problem.
 */
@@ -240,6 +246,73 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 * stepSimulation *
 ******************/
 
+__device__ __forceinline__
+glm::vec3 evaluateAttractors(glm::vec3 q) {
+    glm::vec3 field(0.0f);
+
+    float x = q.x;
+    float y = q.y;
+    float z = q.z;
+
+#if ENABLE_LORENZ
+
+    // ideal parameters: (p_self / 0.0006f) * 6.0e-11f;
+
+    const float sigma = 10.0f;
+    const float rho = 28.0f;
+    const float beta = 8.0f / 3.0f;
+
+    field += glm::vec3(
+        sigma * (y - x),
+        x * (rho - z) - y,
+        x * y - beta * z
+    );
+
+#endif
+
+#if ENABLE_THOMAS
+
+    // ideal parameters: (p_self / 0.1f) * 6.0e-5f;
+    const float b = 0.208186f;
+
+    field += glm::vec3(
+        sinf(y) - b * x,
+        sinf(z) - b * y,
+        sinf(x) - b * z
+    );
+
+#endif
+
+#if ENABLE_HALVORSEN
+    // ideal parameters: (p_self / 0.006f) * 6.0e-12f
+
+    const float a = 1.4f;
+
+    field += glm::vec3(
+        -a * x - 4.0f * y - 4.0f * z - y * y,
+        -a * y - 4.0f * z - 4.0f * x - z * z,
+        -a * z - 4.0f * x - 4.0f * y - x * x
+    );
+
+#endif
+
+#if ENABLE_SPROTT_B
+    // ideal parameters: (p_self / 0.0006f) * 6.0e-11f;
+
+    const float a = 2.07f;
+    const float b = 1.79f;
+
+    field += glm::vec3(
+        y + a * x * y + x * z,
+        1.0f - b * x * x + y * z,
+        x - x * x - y * y
+    );
+
+#endif
+
+    return field;
+}
+
 /**
 * LOOK-1.2 You can use this as a helper for kernUpdateVelocityBruteForce.
 * __device__ code can be called from a __global__ context
@@ -247,10 +320,52 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 * in the `pos` and `vel` arrays.
 */
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
-  // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
-  // Rule 2: boids try to stay a distance d away from each other
-  // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(0.0f, 0.0f, 0.0f);
+
+    glm::vec3 perceived_center(0.0f, 0.0f, 0.0f);
+    unsigned int num_neighbors_1 = 0;
+
+    glm::vec3 c(0.0f, 0.0f, 0.0f);
+
+    glm::vec3 perceived_velocity(0.0f, 0.0f, 0.0f);
+    unsigned int num_neighbors_3 = 0;
+
+    glm::vec3 p_self = pos[iSelf];
+    for (unsigned int i = 0; i < N; i++) {
+        glm::vec3 p = pos[i];
+
+        // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
+        if (i != iSelf && glm::length(p_self - p) < rule1Distance) {
+            perceived_center += p;
+            num_neighbors_1++;
+        }
+
+        // Rule 2: boids try to stay a distance d away from each other
+        if (i != iSelf && glm::length(p_self - p) < rule2Distance) {
+            c -= p - p_self;
+        }
+
+        // Rule 3: boids try to match the speed of surrounding boids
+        if (i != iSelf && glm::length(p_self - p) < rule3Distance) {
+            perceived_velocity += vel[i];
+            num_neighbors_3++;
+        }
+    }
+
+    if (num_neighbors_1 > 0) {
+        perceived_center /= num_neighbors_1;
+    }
+    else {
+        perceived_center = p_self;
+    }
+
+    if (num_neighbors_3 > 0) {
+        perceived_velocity /= num_neighbors_3;
+    }
+    else {
+        perceived_velocity = glm::vec3(0.0f, 0.0f, 0.0f);
+    }
+
+    return (perceived_center - p_self) * rule1Scale + c * rule2Scale + perceived_velocity * rule3Scale + evaluateAttractors(p_self / 0.0006f) * 6.0e-11f;
 }
 
 /**
@@ -262,6 +377,18 @@ __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   // Compute a new velocity based on pos and vel1
   // Clamp the speed
   // Record the new velocity into vel2. Question: why NOT vel1?
+
+    unsigned int index = threadIdx.x + (blockIdx.x * blockDim.x);
+    if (index >= N) {
+        return;
+    }
+    glm::vec3 new_velocity = vel1[index] + computeVelocityChange(N, index, pos, vel1);
+
+    float len = glm::length(new_velocity);
+    if (len > maxSpeed && len > 0.0f) {
+        new_velocity = glm::normalize(new_velocity) * maxSpeed;
+    }
+    vel2[index] = new_velocity;
 }
 
 /**
@@ -366,6 +493,25 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
   // TODO-1.2 ping-pong the velocity buffers
+    const int numBlocks = (numObjects + blockSize - 1) / blockSize;
+    dim3 fullBlocksPerGrid(numBlocks);
+
+    kernUpdateVelocityBruteForce << <fullBlocksPerGrid, threadsPerBlock >> > (
+        numObjects,
+        dev_pos,
+        dev_vel1,
+        dev_vel2
+        );
+    checkCUDAErrorWithLine("kernUpdateVelocityBruteForce failed!");
+    kernUpdatePos << <fullBlocksPerGrid, threadsPerBlock >> > (
+        numObjects,
+        dt,
+        dev_pos,
+        dev_vel2
+        );
+    checkCUDAErrorWithLine("kernUpdatePos failed!");
+    cudaDeviceSynchronize();
+    std::swap(dev_vel1, dev_vel2);
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
