@@ -9,7 +9,9 @@ CUDA implementation of a 3D boids simulation with brute-force, scattered-grid, a
 
 ![Boids](images/boids_01.png)
 
-![Boids in Motion](images/boids_1.gif)
+
+| ![Boids in Motion](images/boids_1.gif) | ![Sprott B](images/boids_sprott.gif) |
+|:---:|:---:|
 
 ## Implementation
 
@@ -111,6 +113,8 @@ Halving the cell width increases the search from 8 to as many as 27 cells, but e
 Instead of hard-coding a fixed set of neighboring cells, the neighbor-search kernels compute the minimum and maximum grid-cell indices touched by the boid's maximum interaction distance along each axis. The kernel then iterates over the resulting three-dimensional range of cells. This makes the search independent of a fixed number such as 8 or 27 cells.
 
 ### Attractor Vector Fields
+
+![](images/boids_02.png)
 
 Optional strange-attractor vector fields can be enabled to influence the boids' velocity updates. The vector field is evaluated at each boid's position and added to its acceleration, allowing the flock to form interesting patterns around attractors such as Lorenz, Thomas, Halvorsen, and Sprott B.
 
