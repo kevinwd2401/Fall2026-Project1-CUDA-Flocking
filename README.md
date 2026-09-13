@@ -13,6 +13,26 @@ CUDA implementation of a 3D boids simulation with brute-force, scattered-grid, a
 | ![Boids in Motion](images/boids_1.gif) | ![Sprott B](images/boids_sprott.gif) |
 |:---:|:---:|
 
+## Overview
+
+So what are boids? Boids are agents that simulate flocking behavior through simple local rules. Each individual boid particle observes nearby boids and adjusts its velocity based on the neighbors' positions and velocities. Although each boid follows only local rules, the group produces emergent flocking behavior such as coordinated movement and clustering.
+
+For each individual boid, the simulation performs the following pseudocode every frame:
+
+```
+for each nearby boid:
+    if within cohesion radius:
+        move toward the neighbors' average position
+    if within separation radius:
+        move away from nearby neighbors
+    if within alignment radius:
+        match the neighbors' average velocity
+
+update velocity using the combined steering forces
+limit the boid's speed
+update position using the new velocity
+```
+
 ## Implementation
 
 - CUDA-based boid simulation with cohesion, separation, and alignment rules
